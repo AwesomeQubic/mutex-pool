@@ -12,37 +12,26 @@ use std::{
 
 fn count_pool(size: usize, threads: usize) {
     let pool = Arc::new(Pool::new(vec![u16::MAX; size]).unwrap());
-    let counter = Arc::new(AtomicUsize::new(size));
 
     let mut handles = Vec::new();
 
     for i in 0..threads {
         let pool = pool.clone();
-        let counter = counter.clone();
         let handle = thread::spawn(move || {
             loop {
                 let mut locked = match pool.try_lock() {
                     Some(x) => x,
                     None => {
-                        if counter.load(std::sync::atomic::Ordering::Relaxed) < i + 1 {
-                            return;
-                        }
-                        continue;
+                        return;
                     }
                 };
-                match locked.checked_sub(1) {
-                    Some(x) => {
-                        *locked = x;
-                    }
-                    None => {
-                        //Keep it allocated
-                        forget(locked);
 
-                        if counter.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > i + 1 {
-                            return;
-                        }
-                    }
+                advance(&mut locked);
+                if *locked == 1 {
+                    forget(locked);
                 }
+
+
             }
         });
         handles.push(handle);
@@ -51,6 +40,12 @@ fn count_pool(size: usize, threads: usize) {
     for ele in handles {
         ele.join();
     }
+}
+
+fn advance(i: &mut u16) {
+    *i ^= *i >> 7;
+    *i ^= *i << 9;
+    *i ^= *i >> 13;
 }
 
 fn criterion_benchmark(c: &mut Criterion) {

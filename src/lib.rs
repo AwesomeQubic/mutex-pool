@@ -2,16 +2,27 @@ use std::{
     cell::UnsafeCell,
     mem::transmute,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicU32, AtomicUsize},
+    process::exit,
+    sync::atomic::{AtomicU32, AtomicU64, AtomicUsize},
+    thread::{self, Thread},
 };
 
-use atomic_wait::wait;
+use crossbeam_utils::CachePadded;
+use wyrand::WyRand;
+
+#[cfg(target_arch = "aarch64")]
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
+thread_local! {
+    static ID: u32 = {
+        let seed = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        WyRand::gen_u64(seed).0 as u32
+    }
+}
 
 pub struct Pool<T: Sync> {
-    free: AtomicU32,
-
-    
-    table: AtomicUsize,
+    table: CachePadded<AtomicUsize>,
     inner: Vec<WrapCell<T>>,
 }
 
@@ -33,31 +44,12 @@ impl<T: Sync> Pool<T> {
                 0
             };
             Ok(Pool {
-                free: AtomicU32::new(len as u32),
-                table: AtomicUsize::new(table),
+                table: CachePadded::new(AtomicUsize::new(table)),
                 inner: new_vec,
             })
         }
     }
-
-    pub fn lock<'a>(&'a self) -> PoolGuard<'a, T> {
-        let index;
-        loop {
-            match self.alloc() {
-                Some(x) => {
-                    index = x;
-                    break;
-                }
-                None => wait(&self.free, 0),
-            };
-        }
-
-        PoolGuard {
-            index: index,
-            pool: &self,
-        }
-    }
-
+    
     pub fn try_lock<'a>(&'a self) -> Option<PoolGuard<'a, T>> {
         let Some(index) = self.alloc() else {
             return None;
@@ -69,29 +61,60 @@ impl<T: Sync> Pool<T> {
         })
     }
 
+    #[cfg(target_arch = "aarch64")]
     fn alloc(&self) -> Option<usize> {
-        const fn next_in_sequence(prev: usize) -> Option<(usize, usize)> /* (index, next) */ {
-            let index = prev.trailing_ones();
-            if index == usize::BITS {
+        fn next_in_sequence(prev: usize, distinguish: u32) -> Option<(usize, usize)> /* index */ {
+            let trailing = prev.trailing_ones();
+
+            if trailing == usize::BITS {
                 return None;
             }
+
+            let free = prev.count_zeros();
+            let target = distinguish % free;
+
+            let index = find_nth_zero_bit_position(prev, target + 1);
             let mask = 1 << index;
-            Some((index as usize, prev | mask))
+
+            Some((index as usize, mask))
         }
 
-        let mut prev = self.table.load(std::sync::atomic::Ordering::SeqCst);
-        while let Some((index, next)) = next_in_sequence(prev) {
-            match self.table.compare_exchange_weak(
-                prev,
-                next,
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-            ) {
-                x @ Ok(_) => {
-                    self.free.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return Some(index);
-                }
-                Err(next_prev) => prev = next_prev,
+        let tid = ID.with(|x| *x);
+
+        let mut prev = self.table.load(std::sync::atomic::Ordering::Relaxed);
+        while let Some((index, mask)) = next_in_sequence(prev, tid) {
+            let current = self
+                .table
+                .fetch_or(mask, std::sync::atomic::Ordering::Relaxed);
+
+            if successful(current, mask) {
+                return Some(index);
+            } else {
+                //println!("({s}) {prev:b} -> {current:b} {mask:b} ({index}) ({tid})");
+                prev = current
+            };
+        }
+        None
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn alloc(&self) -> Option<usize> {
+        fn next_in_sequence(prev: usize) -> Option<(usize, usize)> /* index */ {
+            let trailing = prev.trailing_ones();
+
+            if trailing == usize::BITS {
+                return None;
+            }
+
+            let mask = 1 << trailing;
+            Some((trailing as usize, mask))
+        }
+
+        let mut prev = self.table.load(std::sync::atomic::Ordering::Relaxed);
+        while let Some((index, mask)) = next_in_sequence(prev) {
+            match self.table.compare_exchange(prev, prev | mask, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed) {
+                Ok(_) => {return Some(index);},
+                Err(out) => {prev = out},
             }
         }
         None
@@ -103,12 +126,33 @@ impl<T: Sync> Pool<T> {
         //We do not care about the order here just that its happens atomically
         self.table
             .fetch_and(mask, std::sync::atomic::Ordering::Relaxed);
-
-        //We do not care about the order here just that its happens atomically
-        if self.free.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) == 1 {
-            atomic_wait::wake_one(&self.free as *const AtomicU32);
-        }
     }
+}
+
+/// SAFETY: Caller must ensure that `num` has at least `n` zero bits
+#[cfg(target_arch = "aarch64")]
+fn find_nth_zero_bit_position(num: usize, mut n: u32) -> usize {
+    let mut pos: u32 = 0;
+    loop {
+        let shifted = num >> pos;
+        let zeros = shifted.trailing_zeros();
+
+        if n <= zeros {
+            return (pos + n) as usize - 1;
+        }
+
+        // Skip this zero run and the next run of 1s
+        n -= zeros;
+        pos += zeros;
+
+        // Fast-forward through 1s
+        pos += shifted.trailing_ones();
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn successful(table: usize, mask: usize) -> bool {
+    (table & mask) == 0
 }
 
 #[derive(Debug)]

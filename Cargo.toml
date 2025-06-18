@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-atomic-wait = "1.1.0"
+crossbeam-utils = "0.8.21"
+wyrand = "0.3.2"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
