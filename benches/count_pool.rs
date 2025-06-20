@@ -1,17 +1,13 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use mutex_pool::Pool;
+use mutex_pool::simple::AtomicU64Pool;
 use std::{
-    hint::black_box,
     mem::forget,
-    sync::{
-        Arc,
-        atomic::{AtomicU32, AtomicUsize},
-    },
+    sync::Arc,
     thread,
 };
 
 fn count_pool(size: usize, threads: usize) {
-    let pool = Arc::new(Pool::new(vec![u16::MAX; size]).unwrap());
+    let pool = Arc::new(AtomicU64Pool::new(vec![u16::MAX; size]).unwrap());
 
     let mut handles = Vec::new();
 
@@ -30,8 +26,6 @@ fn count_pool(size: usize, threads: usize) {
                 if *locked == 1 {
                     forget(locked);
                 }
-
-
             }
         });
         handles.push(handle);

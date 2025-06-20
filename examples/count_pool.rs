@@ -5,10 +5,10 @@ use std::{
     thread,
 };
 
-use mutex_pool::Pool;
+use mutex_pool::simple::AtomicU64Pool;
 
 fn count_pool(size: usize, threads: usize) {
-    let pool = Arc::new(Pool::new(vec![u16::MAX; size]).unwrap());
+    let pool = Arc::new(AtomicU64Pool::new(vec![u16::MAX; size]).unwrap());
     let counter = Arc::new(AtomicUsize::new(size));
     let checker = Arc::new(AtomicUsize::new(0));
 
