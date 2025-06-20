@@ -42,18 +42,16 @@ impl<T: Sync> AsyncAtomicU64Pool<T> {
         }
     }
 
-    pub fn lock<'a>(&'a self) -> GuardFuture<'a, T> {
-        GuardFuture(&self)
+    pub fn lock(&self) -> GuardFuture<'_, T> {
+        GuardFuture(self)
     }
 
-    pub fn try_lock<'a>(&'a self) -> Option<AtomicU64PoolGuard<'a, T>> {
-        let Some(index) = self.alloc() else {
-            return None;
-        };
+    pub fn try_lock(&self) -> Option<AtomicU64PoolGuard<'_, T>> {
+        let index = self.alloc()?;
 
         Some(AtomicU64PoolGuard {
-            index: index,
-            pool: &self,
+            index,
+            pool: self,
         })
     }
 
@@ -125,13 +123,13 @@ pub struct AtomicU64PoolGuard<'a, T: Sync> {
     pool: &'a AsyncAtomicU64Pool<T>,
 }
 
-impl<'a, T: Sync> AtomicU64PoolGuard<'a, T> {
+impl<T: Sync> AtomicU64PoolGuard<'_, T> {
     pub fn index(&self) -> usize {
         self.index
     }
 }
 
-impl<'a, T: Sync> Deref for AtomicU64PoolGuard<'a, T> {
+impl<T: Sync> Deref for AtomicU64PoolGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -143,7 +141,7 @@ impl<'a, T: Sync> Deref for AtomicU64PoolGuard<'a, T> {
     }
 }
 
-impl<'a, T: Sync> DerefMut for AtomicU64PoolGuard<'a, T> {
+impl<T: Sync> DerefMut for AtomicU64PoolGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
             //Since index is given to use beforehand we know its safe
@@ -153,7 +151,7 @@ impl<'a, T: Sync> DerefMut for AtomicU64PoolGuard<'a, T> {
     }
 }
 
-impl<'a, T: Sync> Drop for AtomicU64PoolGuard<'a, T> {
+impl<T: Sync> Drop for AtomicU64PoolGuard<'_, T> {
     fn drop(&mut self) {
         //We know this index is safe
         unsafe { self.pool.free(self.index) };

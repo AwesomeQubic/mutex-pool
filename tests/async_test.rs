@@ -2,12 +2,11 @@ use mutex_pool::async_pool::AsyncAtomicU64Pool;
 use std::{
     sync::{Arc, atomic::AtomicU64},
     time::Duration,
-    u64,
 };
 use tokio::{spawn, sync::Notify};
 use tokio::{
     sync::{
-        Barrier, broadcast,
+        Barrier,
         mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     },
     time::sleep,
@@ -38,7 +37,7 @@ async fn test() {
     }
 
     for ele in handles {
-        ele.await;
+        let _ = ele.await;
     }
 
     if TEST.load(std::sync::atomic::Ordering::Acquire) != u64::MAX {

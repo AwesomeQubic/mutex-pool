@@ -11,7 +11,7 @@ fn count_pool(size: usize, threads: usize) {
 
     let mut handles = Vec::new();
 
-    for i in 0..threads {
+    for _ in 0..threads {
         let pool = pool.clone();
         let handle = thread::spawn(move || {
             loop {
