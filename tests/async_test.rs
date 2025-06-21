@@ -29,11 +29,7 @@ async fn test() {
     let mut handles = Vec::with_capacity(64);
     for i in 0..64 {
         let out = 1u64 << i;
-        handles.push(spawn(worker(
-            pool.clone(),
-            out,
-            blockade.clone(),
-        )));
+        handles.push(spawn(worker(pool.clone(), out, blockade.clone())));
     }
 
     for ele in handles {

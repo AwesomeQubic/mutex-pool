@@ -1,45 +1,32 @@
 use std::{
-
     mem::transmute,
     ops::{Deref, DerefMut},
-    sync::atomic::AtomicU64,
     task::{Poll, Waker},
 };
 
 use crossbeam::queue::SegQueue;
 use crossbeam_utils::CachePadded;
 
-use crate::WrapCell;
+use crate::{lock::GroupLockU64, WrapCell};
 
 pub struct AsyncAtomicU64Pool<T: Sync> {
-    table: CachePadded<AtomicU64>,
-    inner: Vec<WrapCell<T>>,
+    table: GroupLockU64,
+    inner: Box<[WrapCell<T>]>,
     wakers: SegQueue<Waker>,
 }
 
 impl<T: Sync> AsyncAtomicU64Pool<T> {
     pub fn new(vec: Vec<T>) -> Result<Self, PoolCreationError> {
         let len = vec.len();
-
-        //usize::BITS is always < than usize::MAX
-        if len > (u64::BITS as usize) {
+        let Some(lock) = GroupLockU64::create(len) else {
             return Err(PoolCreationError::TooManyValues);
-        }
+        };
 
-        //SAFETY: We are using repr transparent thus its ok
-        unsafe {
-            let new_vec: Vec<WrapCell<T>> = transmute(vec);
-            let table = if len != usize::BITS as usize {
-                u64::MAX << len
-            } else {
-                0
-            };
-            Ok(AsyncAtomicU64Pool {
-                table: CachePadded::new(AtomicU64::new(table)),
-                inner: new_vec,
-                wakers: SegQueue::new(),
-            })
-        }
+        Ok(Self {
+            wakers: SegQueue::new(),
+            table: lock,
+            inner: crate::convert(vec.into_boxed_slice()),
+        })
     }
 
     pub fn lock(&self) -> GuardFuture<'_, T> {
@@ -47,49 +34,14 @@ impl<T: Sync> AsyncAtomicU64Pool<T> {
     }
 
     pub fn try_lock(&self) -> Option<AtomicU64PoolGuard<'_, T>> {
-        let index = self.alloc()?;
+        let index = self.table.alloc()?;
 
-        Some(AtomicU64PoolGuard {
-            index,
-            pool: self,
-        })
-    }
-
-    fn alloc(&self) -> Option<usize> {
-        fn next_in_sequence(prev: u64) -> Option<(usize, u64)> /* index */ {
-            let trailing = prev.trailing_ones();
-
-            if trailing == usize::BITS {
-                return None;
-            }
-
-            let mask = 1 << trailing;
-            Some((trailing as usize, mask))
-        }
-
-        let mut prev = self.table.load(std::sync::atomic::Ordering::Relaxed);
-        while let Some((index, mask)) = next_in_sequence(prev) {
-            match self.table.compare_exchange(
-                prev,
-                prev | mask,
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    return Some(index);
-                }
-                Err(out) => prev = out,
-            }
-        }
-        None
+        Some(AtomicU64PoolGuard { index, pool: self })
     }
 
     /*SAFETY: Caller has to ensure that resource is actually free */
     unsafe fn free(&self, index: usize) {
-        let mask = !(1 << index);
-        //We do not care about the order here just that its happens atomically
-        self.table
-            .fetch_and(mask, std::sync::atomic::Ordering::Relaxed);
+        unsafe {self.table.free(index) };
 
         if let Some(next) = self.wakers.pop() {
             next.wake();

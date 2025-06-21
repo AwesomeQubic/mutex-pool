@@ -11,6 +11,10 @@ wyrand = "0.3.2"
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tokio = { version = "*", features = ["full"]}
+loom = "*"
+
+[target.'cfg(loom)'.dependencies]
+loom = "*"
 
 [[bench]]
 name = "count_pool"
